@@ -1,0 +1,208 @@
+node_modules/
+.DS_Store
+
+{
+  "appId": "com.example.bookingapp",
+  "appName": "הזמנת תורים",
+  "webDir": "www"
+}
+
+{
+  "firestore": { "rules": "firestore.rules", "indexes": "firestore.indexes.json" },
+  "hosting": {
+    "public": "www",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "headers": [
+      { "source": "/sw.js", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
+    ]
+  }
+}
+
+{ "indexes": [], "fieldOverrides": [] }
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+    // Main admins: create a document admins/<their uid> manually in the Firebase console.
+    function isAdmin() {
+      return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // Admin flag: a user may only check their own; nobody can write it from the app.
+    match /admins/{uid} {
+      allow get: if isSelf(uid);
+    }
+
+    // Display names: visible only to the user and to admins.
+    match /profiles/{uid} {
+      allow read: if isSelf(uid) || isAdmin();
+      allow write: if isSelf(uid);
+    }
+
+    // Business profiles: everyone signed in can read; the owner (or an admin) writes.
+    match /businesses/{uid} {
+      allow read: if signedIn();
+      allow create, update: if (isSelf(uid) || isAdmin())
+        && request.resource.data.keys().hasOnly(['list'])
+        && request.resource.data.list is list
+        && request.resource.data.list.size() <= 10;
+      allow delete: if isSelf(uid) || isAdmin();
+    }
+
+    // Suspended businesses: only admins write.
+    match /suspended/{uid} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // Cancellations made by a business for its own bookings.
+    match /cancelled/{uid} {
+      allow read: if signedIn();
+      allow write: if isSelf(uid) || isAdmin();
+    }
+
+    // Claimed time slots (what makes a slot "taken"); each customer writes only their own document.
+    match /taken/{uid} {
+      allow read: if signedIn();
+      allow write: if isSelf(uid);
+    }
+
+    // Private booking details (name, phone, notes): the customer, and admins for reading.
+    match /bookings/{uid} {
+      allow get: if isSelf(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow write: if isSelf(uid);
+    }
+  }
+}
+
+{
+  "name": "booking-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Appointment booking: website, installable PWA, and Android/iOS apps via Capacitor",
+  "scripts": {
+    "serve": "npx http-server www -p 8080 -c-1",
+    "cap:add:android": "npx cap add android",
+    "cap:add:ios": "npx cap add ios",
+    "cap:sync": "npx cap sync",
+    "cap:android": "npx cap open android",
+    "cap:ios": "npx cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/ios": "^6.1.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2"
+  }
+}
+
+# הזמנת תורים — אתר, PWA ואפליקציה לאנדרואיד ואייפון
+
+קוד אחד (תיקיית `www/`) שרץ בשלוש דרכים:
+
+1. **אתר** באינטרנט הרגיל (Firebase Hosting).
+2. **PWA**: אותו אתר, שאפשר "להתקין" למסך הבית מ-Chrome (אנדרואיד) ו-Safari (אייפון).
+3. **אפליקציה בחנויות** (Google Play / App Store) באמצעות Capacitor, שעוטף את אותו קוד.
+
+השרת הוא Firebase: התחברות (אימייל+סיסמה, וגם Google באתר) ומסד נתונים Firestore.
+
+## מבנה
+
+```
+www/index.html, styles.css           מבנה המסכים והעיצוב
+www/js/app.js                        הפעלה, ניווט ורינדור
+www/js/data.js                       Firebase: התחברות, האזנה לנתונים וכל הכתיבות
+www/js/slots.js                      לוגיקת ימים, שעות ותפיסת שעה
+www/js/i18n.js                       עברית, ערבית ואנגלית
+www/js/views/                        מסכי לקוח, התורים שלי, בעל עסק ואדמין
+www/firebase-config.js               כאן מדביקים את פרטי הפרויקט ב-Firebase
+www/manifest.webmanifest, sw.js      התקנה כ-PWA ופתיחה גם בלי רשת טובה
+www/icons/                           אייקונים (icon-source-1024.png במקור)
+firestore.rules                      כללי אבטחה למסד הנתונים
+firebase.json                        הגדרות פריסה
+capacitor.config.json, package.json  אריזה לאנדרואיד ולאייפון
+```
+
+
+## הדגמה בלי Firebase
+
+`www/demo.html` מריץ את האפליקציה עם שרת מדומה בתוך הדפדפן (כל אימייל וסיסמה נכנסים, והנתונים נשמרים ב-localStorage). הפעילו שרת מקומי (`npm run serve`) ופתחו `/demo.html`. זה רק לניסוי, לא לשימוש אמיתי.
+
+## שלב 1: יצירת פרויקט Firebase (פעם אחת)
+
+1. היכנסו ל-https://console.firebase.google.com ויצרו פרויקט.
+2. **Build > Authentication > Get started**, והפעילו את **Email/Password**. אם רוצים כניסה עם Google באתר, הפעילו גם **Google**.
+3. **Build > Firestore Database > Create database** (אפשר Production mode, הכללים יוחלפו בהמשך).
+4. **Project settings > Your apps > Web (`</>`)**: רשמו את האפליקציה והעתיקו את אובייקט ה-config לתוך `www/firebase-config.js`. הערכים האלה אינם סודיים, והאבטחה נעשית דרך `firestore.rules`.
+
+## שלב 2: פריסה לאינטרנט
+
+```bash
+npm install -g firebase-tools
+firebase login
+firebase use --add            # בחרו את הפרויקט
+firebase deploy               # מעלה את האתר ואת כללי האבטחה
+```
+
+האתר יעלה בכתובת `https://<project-id>.web.app`. לבדיקה מקומית: `npm run serve` ואז http://localhost:8080
+(כדי שכניסה עם Google תעבוד גם ב-localhost או בדומיין משלכם, הוסיפו אותו ב-Authentication > Settings > Authorized domains).
+
+## שלב 3: אדמין ראשי
+
+1. היכנסו לאפליקציה והירשמו עם החשבון שלכם.
+2. ב-Firebase console: **Authentication > Users**, והעתיקו את ה-**User UID** שלכם.
+3. ב-**Firestore** צרו אוסף `admins` ומסמך שה-ID שלו הוא ה-UID (אפשר מסמך ריק). אחרי ריענון תופיע הלשונית "ניהול ראשי".
+
+## שלב 4: התקנה כ-PWA
+
+- אנדרואיד (Chrome): תפריט ⋮ > "התקנת אפליקציה" / "הוספה למסך הבית".
+- אייפון (Safari): כפתור השיתוף > "הוספה למסך הבית".
+
+זו הדרך המהירה והחינמית, ואין צורך בחנויות.
+
+## קובץ APK בלי להתקין Android Studio
+
+1. העלו את התיקייה `booking-app` למאגר חדש ב-GitHub (פרטי או ציבורי).
+2. בלשונית **Actions** בחרו **Build Android APK** ולחצו **Run workflow**.
+3. אחרי כמה דקות היכנסו להרצה והורידו את הקובץ `booking-app-apk` (ה-APK בתוך zip).
+4. העבירו את `app-debug.apk` לטלפון אנדרואיד ופתחו אותו. צריך לאשר "התקנה ממקורות לא ידועים".
+
+זה APK לבדיקה והתקנה ישירה. להעלאה ל-Google Play צריך גרסה חתומה (AAB), שנבנית ב-Android Studio דרך `Build > Generate Signed Bundle`.
+
+## שלב 5: אפליקציה בחנויות (Capacitor)
+
+דרישות: Node.js. לאנדרואיד: Android Studio. לאייפון: Mac עם Xcode.
+
+1. ב-`capacitor.config.json` שנו את `appId` למזהה ייחודי משלכם, למשל `il.co.shemcha.turim`. אי אפשר לשנות אותו אחרי העלאה לחנות.
+2. התקנה והוספת הפלטפורמות:
+   ```bash
+   npm install
+   npx cap add android
+   npx cap add ios        # רק על Mac
+   ```
+3. בכל שינוי בקוד שב-`www/`:
+   ```bash
+   npx cap sync
+   ```
+4. פתיחה והרצה:
+   ```bash
+   npx cap open android   # ב-Android Studio: Run, או Build > Generate Signed Bundle לשליחה ל-Google Play
+   npx cap open ios       # ב-Xcode: Run, או Product > Archive לשליחה ל-App Store
+   ```
+5. אייקון ומסך פתיחה: `npm i -D @capacitor/assets`, שימו את `icon-source-1024.png` בתיקייה `assets/` בשם `icon-only.png`, והריצו `npx @capacitor/assets generate`.
+
+עלויות: חשבון Google Play הוא תשלום חד-פעמי של כ-25$, וחשבון Apple Developer כ-99$ לשנה.
+
+## דברים טובים לדעת
+
+- **כניסה עם Google בתוך האפליקציה** (אנדרואיד/אייפון) לא עובדת עם החלון הקופץ, ולכן הכפתור מוסתר שם והכניסה היא באימייל וסיסמה. אם רוצים Google גם באפליקציה, צריך את התוסף `@capacitor-firebase/authentication`.
+- **מחיקת חשבון** (נדרשת ב-App Store): בלשונית "התורים שלי" > "מחיקת החשבון". היא מוחקת את התורים, העסקים והפרופיל של המשתמש ואת החשבון עצמו, אחרי אימות סיסמה ולחיצת אישור. תורים שלקוחות אחרים קבעו אצל עסק שנמחק יישארו אצלם ללא שם עסק. בנוסף, ב-App Store Connect יש למלא כתובת Privacy Policy.
+- האפליקציה צריכה אינטרנט (נתונים בזמן אמת). הגופן והספריות של Firebase נטענים מהרשת.
+- **פרטיות:** שם וטלפון של לקוח נראים לבעל העסק ולמשתמשים מחוברים אחרים רק אם הלקוח סימן "שיתוף". שאר הפרטים נשמרים ב-`bookings/<uid>` ונגישים רק ללקוח ולאדמין.
+- מגבלות ושימוש הוגן: Firebase בחבילת Spark חינמית מספיק לעסקים קטנים. כדאי להגדיר התראת תקציב.
